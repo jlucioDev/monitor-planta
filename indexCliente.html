@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitoramento Agrícola - Cliente</title>
+  <style>
+    :root { --bg: #f4f7f6; --card: #fff; --tp: #e53935; --te: #fb8c00; --ue: #039be5; --us: #43a047; --primary: #2e7d32; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: #333; margin: 0; padding: 15px; }
+    h2 { text-align: center; color: var(--primary); margin-bottom: 15px; font-size: 1.5rem; }
+    
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; max-width: 800px; margin: 0 auto 20px; background: var(--card); padding: 12px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    select { flex-grow: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; min-width: 200px; }
+    button { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 0.95rem; color: white; transition: 0.2s; white-space: nowrap; }
+    .btn-export { background: #1976d2; } .btn-export:hover { background: #115293; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; max-width: 800px; margin: 0 auto 20px; }
+    .card { background: var(--card); padding: 15px 10px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
+    .card h3 { margin: 0 0 5px; font-size: 0.85rem; color: #666; font-weight: normal; }
+    .card .val { font-size: 1.6rem; font-weight: bold; }
+    .tp { color: var(--tp); } .te { color: var(--te); } .ue { color: var(--ue); } .us { color: var(--us); }
+    
+    .chart-card { max-width: 800px; margin: 0 auto; background: var(--card); padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    canvas { width: 100%; height: 250px; display: block; }
+    .legend { display: flex; justify-content: center; gap: 15px; margin-top: 15px; flex-wrap: wrap; }
+    .leg-item { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+
+    .footer { text-align: center; font-size: 0.85rem; color: #666; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; line-height: 1.6; }
+    .footer p { margin: 4px 0; }
+    .footer strong { color: var(--primary); }
+  </style>
+</head>
+<body>
+  <h2>🌱 Acompanhamento da Planta</h2>
+  
+  <div class="controls">
+    <select id="sessionSelect" onchange="alterarSessaoVisualizacao()"></select>
+    <button class="btn-export" onclick="exportarCSV()">Baixar (Excel)</button>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>Temp. Planta</h3><div class="val tp" id="v-tp">-- °C</div></div>
+    <div class="card"><h3>Temp. Ar</h3><div class="val te" id="v-te">-- °C</div></div>
+    <div class="card"><h3>Umid. Ar</h3><div class="val ue" id="v-ue">-- %</div></div>
+    <div class="card"><h3>Umid. Solo</h3><div class="val us" id="v-us">-- %</div></div>
+  </div>
+
+  <div class="chart-card">
+    <canvas id="chart"></canvas>
+    <div class="legend">
+      <div class="leg-item"><div class="dot" style="background:var(--tp)"></div>Planta</div>
+      <div class="leg-item"><div class="dot" style="background:var(--te)"></div>Ar (T)</div>
+      <div class="leg-item"><div class="dot" style="background:var(--ue)"></div>Ar (U)</div>
+      <div class="leg-item"><div class="dot" style="background:var(--us)"></div>Solo</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Projeto desenvolvido no <strong>Laboratório de Inovação Tecnológica do Baixo Amazonas (LITBA)</strong>.</p>
+    <p><strong>Equipe:</strong><br>Adriano Cavalcante dos Santos<br>Willian Kaíke Campos Gossel<br>Kennedy Augusto Guedes Barroso</p>
+    <p><strong>Sob a orientação de:</strong><br>Prof. Dr. Darlon Alves<br>Prof. Me. João Lúcio</p>
+  </div>
+
+  <script>
+    const cvs = document.getElementById('chart');
+    const ctx = cvs.getContext('2d');
+    
+    // ATENÇÃO: Coloque seu link principal do Firebase aqui
+    const FIREBASE_BASE = 'https://litba-monitor-planta-default-rtdb.firebaseio.com';
+    
+    let dbSessoes = {};
+    let sessaoExibidaId = null;
+    let dadosAtuais = [];
+
+    // Busca apenas de leitura (GET)
+    async function carregarTudo() {
+      try {
+        const resAtiva = await fetch(`${FIREBASE_BASE}/config/sessao_ativa.json`);
+        const ativaAtual = await resAtiva.json();
+
+        const resSessoes = await fetch(`${FIREBASE_BASE}/sessoes.json`);
+        const sessoesRes = await resSessoes.json();
+        
+        if (!sessoesRes) return; // Se estiver vazio, não faz nada
+        
+        dbSessoes = sessoesRes;
+
+        // Se o cliente ainda não escolheu uma aba, mostra a que está ativa gravando no momento
+        if (!sessaoExibidaId) {
+          sessaoExibidaId = ativaAtual;
+        }
+
+        atualizarInterface();
+      } catch (e) { console.error("Erro ao carregar dados."); }
+    }
+
+    function alterarSessaoVisualizacao() {
+      const select = document.getElementById('sessionSelect');
+      sessaoExibidaId = select.value;
+      // Note que não enviamos PUT para a nuvem. Apenas mudamos o que o cliente vê na tela dele.
+      atualizarInterface();
+    }
+
+    function atualizarInterface() {
+      const select = document.getElementById('sessionSelect');
+      const valorSelecionadoAnterior = select.value;
+      
+      select.innerHTML = '';
+      
+      for (const [id, sessao] of Object.entries(dbSessoes)) {
+        let opt = document.createElement('option');
+        opt.value = id; opt.innerText = sessao.nome;
+        if (id === sessaoExibidaId) opt.selected = true;
+        select.appendChild(opt);
+      }
+
+      dadosAtuais = [];
+      const sessaoSelecionada = dbSessoes[sessaoExibidaId];
+      if (sessaoSelecionada && sessaoSelecionada.dados) {
+        dadosAtuais = Object.values(sessaoSelecionada.dados);
+      }
+
+      if (dadosAtuais.length > 0) {
+        const last = dadosAtuais[dadosAtuais.length - 1];
+        document.getElementById('v-tp').innerText = last.tp.toFixed(1) + ' °C';
+        document.getElementById('v-te').innerText = last.te.toFixed(1) + ' °C';
+        document.getElementById('v-ue').innerText = last.ue.toFixed(1) + ' %';
+        document.getElementById('v-us').innerText = last.us.toFixed(0) + ' %';
+      } else {
+        document.getElementById('v-tp').innerText = '-- °C';
+        document.getElementById('v-te').innerText = '-- °C';
+        document.getElementById('v-ue').innerText = '-- %';
+        document.getElementById('v-us').innerText = '-- %';
+      }
+
+      desenharGrafico(dadosAtuais.slice(-100));
+    }
+
+    function desenharGrafico(dados) {
+      cvs.width = cvs.parentElement.clientWidth - 30; 
+      const w = cvs.width; const h = cvs.height;
+      ctx.clearRect(0, 0, w, h);
+      
+      const pts = dados.length;
+      if (pts < 2) return;
+      const min = 0; const max = 100; const stepX = w / (pts - 1);
+
+      function plot(chave, color) {
+        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+        for(let i=0; i<pts; i++) {
+          const valor = dados[i][chave];
+          const x = i * stepX; const y = h - ((valor - min) / (max - min) * h);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      
+      plot('tp', '#e53935'); plot('te', '#fb8c00'); plot('ue', '#039be5'); plot('us', '#43a047');
+    }
+
+    function exportarCSV() {
+      if(dadosAtuais.length === 0) { alert("Sem dados para baixar nesta sessão."); return; }
+      const nomeSessao = dbSessoes[sessaoExibidaId].nome.replace(/\s+/g, '_');
+      let csv = "Leitura_N,Temp_Planta_C,Temp_Ar_C,Umid_Ar_%,Umid_Solo_%\n";
+      for(let i = 0; i < dadosAtuais.length; i++) {
+        const r = dadosAtuais[i];
+        csv += `${i+1},${r.tp},${r.te},${r.ue},${r.us}\n`;
+      }
+      let link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+      link.setAttribute("download", `LITBA_${nomeSessao}.csv`);
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    }
+
+    carregarTudo();
+    setInterval(carregarTudo, 5000);
+    window.addEventListener('resize', () => { if(dadosAtuais.length > 0) desenharGrafico(dadosAtuais.slice(-100)); });
+  </script>
+</body>
+</html>
